@@ -9,15 +9,24 @@ ROLE="${ROLE:-orchestrator}"
 
 if [ "$ROLE" = "worker" ]; then
     # Worker role: check if work dir is mounted with custom script
-    if [ -f "/work/run.sh" ]; then
+    echo "[Entrypoint] Checking for worker script..."
+    echo "[Entrypoint] /work exists: $(test -d /work && echo yes || echo no)"
+    echo "[Entrypoint] /work/worker exists: $(test -d /work/worker && echo yes || echo no)"
+    echo "[Entrypoint] /work/worker/run.sh exists: $(test -f /work/worker/run.sh && echo yes || echo no)"
+    
+    if [ -f "/work/worker/run.sh" ]; then
+        echo "[Worker] Running custom script from /work/worker/run.sh"
+        cd /work
+        exec bash /work/worker/run.sh
+    elif [ -f "/work/run.sh" ]; then
         echo "[Worker] Running custom script from /work/run.sh"
         cd /work
-        chmod +x run.sh
-        exec /work/run.sh
+        exec bash /work/run.sh
     else
         # Fallback: internal test scenario
+        echo "[Entrypoint] Using FALLBACK internal scenario"
         SCENARIO_ID="${SCENARIO_ID:-1}"
-        DURATION="${SCENARIO_DURATION:-60}"
+        DURATION="${DURATION:-60}"
         
         echo "[Worker] Starting scenario $SCENARIO_ID (duration: ${DURATION}s)"
         sleep "$DURATION"

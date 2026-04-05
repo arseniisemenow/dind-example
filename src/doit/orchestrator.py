@@ -1,7 +1,9 @@
 """Docker orchestrator for parallel test execution."""
 
+import os
 import time
 import threading
+import uuid
 from dataclasses import dataclass
 from typing import Optional
 
@@ -23,6 +25,7 @@ class TestResult:
     status: str
     duration: int
     container_id: str
+    artifacts_copied: bool = False
 
 
 class WorkerPool:
@@ -33,7 +36,8 @@ class WorkerPool:
         num_workers: int = 4,
         image: str = "doit-orchestrator:latest",
         docker_socket: str = "unix:///var/run/docker.sock",
-        work_dir: Optional[str] = None
+        work_dir: Optional[str] = None,
+        artifacts_dir: Optional[str] = None
     ):
         self.num_workers = num_workers
         self.image = image
@@ -42,67 +46,112 @@ class WorkerPool:
         self.results: list[TestResult] = []
         self._lock = threading.Lock()
         self.work_dir = work_dir
+        self.artifacts_dir = artifacts_dir
 
     def _run_scenario(self, scenario: TestScenario) -> TestResult:
         """Run a single test scenario in a container."""
         start_time = time.time()
+        artifacts_copied = False
+        container = None
+
+        print(f"    [Container] Starting scenario {scenario.id}")
 
         try:
             # Build container run arguments
+            # Worker writes artifacts to mounted artifacts directory
             run_kwargs = {
                 "detach": True,
-                "remove": False,
+                "remove": False,  # Keep container to extract artifacts, then remove manually
                 "environment": {
                     "ROLE": "worker",
                     "SCENARIO_ID": str(scenario.id),
-                    "SCENARIO_DURATION": str(scenario.duration)
+                    "SCENARIO_DURATION": str(scenario.duration),
                 },
                 "name": f"doit-worker-{scenario.id}"
             }
 
-            # Mount worker directory from host if specified
+            # Mount worker directory from host if specified (read-only)
             if self.work_dir:
                 run_kwargs["volumes"] = {
                     self.work_dir: {"bind": "/work", "mode": "ro"}
                 }
                 run_kwargs["working_dir"] = "/work"
 
-            # Run container with scenario ID and duration, and set role to worker
+            # Mount artifacts directory - same path in container as host path
+            # Worker writes to /app/tests/artifacts/test_scenario_X which appears on host
+            if self.artifacts_dir:
+                run_kwargs["volumes"] = run_kwargs.get("volumes", {})
+                run_kwargs["volumes"][self.artifacts_dir] = {"bind": self.artifacts_dir, "mode": "rw"}
+                # Also set environment so worker knows where to write
+                run_kwargs["environment"] = run_kwargs.get("environment", {})
+                run_kwargs["environment"]["WORKER_ARTIFACTS_DIR"] = self.artifacts_dir
+
+            print(f"    [Container] Starting worker container...")
+
+            # Run container
             container = self.docker_client.containers.run(
                 self.image,
                 **run_kwargs
             )
 
+            print(f"    [Container] Container started: {container.id}")
+
             with self._lock:
                 self.active_containers.append(container)
 
             # Wait for container to finish
-            container.wait()
+            result = container.wait()
+            exit_code = result.get('StatusCode', 0)
+            print(f"    [Container] Worker {scenario.id} exited with code {exit_code}")
 
-            # Get logs
+            # Get logs (works on stopped/exited containers)
             logs = container.logs().decode('utf-8')
+            print(f"    [Container] Logs: {logs[:500] if logs else '(empty)'}")
 
-            # Remove container after completion
-            container.remove(force=True)
-
+            # Artifacts are written directly to mounted artifacts directory
+            # Check if artifacts were created
+            if self.artifacts_dir:
+                scenario_artifacts_dst = os.path.join(self.artifacts_dir, f"test_scenario_{scenario.id}")
+                if os.path.exists(scenario_artifacts_dst):
+                    artifacts_copied = True
+                    print(f"    [Artifact] Copied to: {scenario_artifacts_dst}")
+            
+            # Remove container after artifacts extracted
+            if container:
+                try:
+                    container.remove(force=True)
+                    print(f"    [Container] Removed container")
+                except Exception as e:
+                    print(f"    [Container] Remove error: {e}")
+            
+            # Remove from active list
             with self._lock:
-                self.active_containers.remove(container)
+                if container in self.active_containers:
+                    self.active_containers.remove(container)
 
             duration = int(time.time() - start_time)
             return TestResult(
                 scenario_id=scenario.id,
                 status="passed",
                 duration=duration,
-                container_id=container.id
+                container_id=container.id if container else "",
+                artifacts_copied=artifacts_copied
             )
 
         except Exception as e:
             duration = int(time.time() - start_time)
+            # Clean up container on error
+            if container:
+                try:
+                    container.remove(force=True)
+                except Exception:
+                    pass
             return TestResult(
                 scenario_id=scenario.id,
                 status=f"failed: {str(e)}",
                 duration=duration,
-                container_id=""
+                container_id=container.id if container else "",
+                artifacts_copied=False
             )
 
     def run_parallel(self, scenarios: list[TestScenario]) -> list[TestResult]:

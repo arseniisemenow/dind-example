@@ -15,6 +15,7 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
 COPY orchestrator/unified_entrypoint.sh /usr/local/bin/doit.sh
+COPY worker/run.sh /usr/local/bin/worker_run.sh
 
 # Install dependencies
 RUN poetry install --no-interaction --no-ansi

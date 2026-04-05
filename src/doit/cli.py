@@ -13,7 +13,7 @@ def cli():
     pass
 
 
-def _run_tests(parallel: bool, workers: int, scenarios: int, duration: int, image: str, work_dir: str = None):
+def _run_tests(parallel: bool, workers: int, scenarios: int, duration: int, image: str, work_dir: str = None, artifacts_dir: str = None):
     """Shared test execution logic."""
     click.echo(f"Starting test execution:")
     click.echo(f"  Parallel: {parallel}")
@@ -23,6 +23,8 @@ def _run_tests(parallel: bool, workers: int, scenarios: int, duration: int, imag
     click.echo(f"  Worker image: {image}")
     if work_dir:
         click.echo(f"  Work dir: {work_dir}")
+    if artifacts_dir:
+        click.echo(f"  Artifacts dir: {artifacts_dir}")
     click.echo()
 
     if not parallel:
@@ -34,7 +36,7 @@ def _run_tests(parallel: bool, workers: int, scenarios: int, duration: int, imag
     start_time = time.time()
 
     try:
-        with WorkerPool(num_workers=workers, image=image, work_dir=work_dir) as pool:
+        with WorkerPool(num_workers=workers, image=image, work_dir=work_dir, artifacts_dir=artifacts_dir) as pool:
             results = pool.run_parallel(scenario_list)
 
         total_time = int(time.time() - start_time)
@@ -44,10 +46,15 @@ def _run_tests(parallel: bool, workers: int, scenarios: int, duration: int, imag
         for result in results:
             status_icon = "✓" if result.status == "passed" else "✗"
             click.echo(f"  {status_icon} Scenario {result.scenario_id}: {result.status} ({result.duration}s)")
+            if result.artifacts_copied:
+                click.echo(f"    Artifacts captured")
 
         passed = sum(1 for r in results if r.status == "passed")
         click.echo()
         click.echo(f"Passed: {passed}/{len(results)}")
+
+        if artifacts_dir:
+            click.echo(f"Artifacts saved to: {artifacts_dir}")
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
@@ -69,22 +76,37 @@ def test(parallel: bool, workers: int, scenarios: int, duration: int, image: str
     Both orchestrator and workers use the same Docker image.
     
     Current directory is mounted as /work in worker containers.
+    Artifacts are captured in ./tests/artifacts directory.
     """
     import os
     import subprocess
 
     # Get current working directory (to share with workers)
     work_dir = os.getcwd()
+    host_work_dir = work_dir  # Store original host path
+    
+    # Artifacts directory (relative to current dir)
+    artifacts_dir = os.path.join(work_dir, "tests", "artifacts")
 
     # Check if we're already inside the container
     if os.environ.get('IN_ORCHESTRATOR'):
+        # When running inside orchestrator container
+        # work_dir is the container path where host dir is mounted (/work)
+        # host_work_dir is the original host path (needed for mounting in workers)
+        # host_artifacts_dir is the original host path for artifacts
+        work_dir = os.environ.get('WORK_DIR', '/work')
+        host_work_dir = os.environ.get('HOST_WORK_DIR', work_dir)
+        host_artifacts_dir = os.environ.get('HOST_ARTIFACTS_DIR', '/app/tests/artifacts')
+        
         # Run tests directly (don't spawn another container)
-        _run_tests(parallel, workers, scenarios, duration, image, work_dir)
+        # Pass host paths so workers can mount host directories correctly
+        _run_tests(parallel, workers, scenarios, duration, image, host_work_dir, host_artifacts_dir)
         return
 
     click.echo("Running in DIND mode (inside container)")
     click.echo(f"  Image: {image}")
     click.echo(f"  Work dir: {work_dir} (mounted as /work)")
+    click.echo(f"  Artifacts dir: {artifacts_dir}")
     click.echo(f"  Mounting Docker socket from host")
     click.echo()
 
@@ -100,10 +122,12 @@ def test(parallel: bool, workers: int, scenarios: int, duration: int, image: str
         sys.exit(1)
 
     # Run orchestrator container with Docker socket mounted and current dir as work dir
+    # Note: No artifacts volume mount - workers use temp directories now
     docker_args = [
         "docker", "run", "--rm",
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
         "-v", f"{work_dir}:/work:ro",
+        "-v", f"{artifacts_dir}:{artifacts_dir}:rw",  # Mount artifacts dir for worker artifacts
         "-e", f"ROLE=orchestrator",
         "-e", f"IN_ORCHESTRATOR=true",
         "-e", f"WORKERS={workers}",
@@ -111,6 +135,8 @@ def test(parallel: bool, workers: int, scenarios: int, duration: int, image: str
         "-e", f"DURATION={duration}",
         "-e", f"WORKER_IMAGE={image}",
         "-e", f"WORK_DIR=/work",
+        "-e", f"HOST_WORK_DIR={work_dir}",
+        "-e", f"HOST_ARTIFACTS_DIR={artifacts_dir}",
     ]
 
     # Pass through parallel flag
