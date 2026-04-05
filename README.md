@@ -7,14 +7,15 @@ Docker-in-Docker demo with parallel test scenario execution.
 ```
 Host Machine (Docker Daemon)
     │
-    └── Orchestrator (Python via Poetry)
-           ├── Connects to host Docker via socket
-           └── Spawns Worker Containers in parallel
-                  ├── Worker 1 → runs scenario 1
-                  ├── Worker 2 → runs scenario 2
-                  ├── Worker 3 → runs scenario 3
-                  ├── Worker 4 → runs scenario 4
-                  └── (after worker finishes) → Worker runs scenario 5
+    └── `poetry run doit test` spawns:
+           └── Orchestrator Container
+                  └── Mounts /var/run/docker.sock
+                  └── Spawns Worker Containers (parallel)
+                         ├── Worker 1 → scenario 1
+                         ├── Worker 2 → scenario 2
+                         ├── Worker 3 → scenario 3
+                         ├── Worker 4 → scenario 4
+                         └── (after worker finishes) → scenario 5
 ```
 
 ## Requirements
@@ -30,20 +31,31 @@ Host Machine (Docker Daemon)
 poetry install
 ```
 
-2. Build the worker Docker image:
+2. Build Docker images:
 ```bash
-poetry run doit build
+poetry run doit build        # Worker image
+# Orchestrator image is built automatically on first `doit test` run
+```
+
+Or build both at once:
+```bash
+docker build -t doit-worker:latest -f worker/Dockerfile worker/
+docker build -t doit-orchestrator:latest -f orchestrator/Dockerfile .
 ```
 
 ## Usage
 
-Run test scenarios in parallel:
+**DIND mode (default):**
 ```bash
-poetry run doit test --parallel --workers 4
+poetry run doit test --workers 4
 ```
 
+This command:
+1. Spawns an orchestrator container with Docker socket mounted
+2. Container runs the test orchestration
+3. Worker containers are spawned in parallel via the mounted socket
+
 Options:
-- `--parallel` - Enable parallel execution (required)
 - `--workers N` - Number of parallel workers (default: 4)
 - `--scenarios N` - Number of test scenarios (default: 5)
 - `--duration N` - Duration of each scenario in seconds (default: 60)
@@ -51,21 +63,12 @@ Options:
 
 ### Examples
 
-Run 4 parallel workers with 5 scenarios (60s each):
 ```bash
-poetry run doit test --parallel --workers 4
-```
-Expected: ~120s (first 4 run in parallel, then 5th)
+# 4 workers, 5 scenarios, 60s each → ~120s total
+poetry run doit test --workers 4
 
-Run 4 workers with 4 scenarios (60s each):
-```bash
-poetry run doit test --parallel --workers 4 --scenarios 4
-```
-Expected: ~60s (all 4 run in parallel)
-
-Run with shorter duration for testing:
-```bash
-poetry run doit test --parallel --workers 4 --duration 10
+# Quick test
+poetry run doit test --workers 4 --scenarios 4 --duration 5
 ```
 
 ## Development
@@ -77,33 +80,32 @@ poetry run pytest tests/ -v
 
 ### Test Verification
 
-The key test `test_4_workers_4_scenarios_should_take_approx_60s` verifies:
-- With 4 workers and 4 scenarios of equal duration
-- Total time ≈ longest single scenario (not sum of all)
-- This proves parallel execution works correctly
+The key test `test_4_workers_4_scenarios_should_take_approx_60s` verifies parallel execution works correctly - total time ≈ longest single scenario, not sum of all.
 
 ## File Structure
 
 ```
 .
-├── pyproject.toml          # Poetry project config
+├── pyproject.toml              # Poetry project config
 ├── src/doit/
 │   ├── __init__.py
-│   ├── cli.py              # CLI entry point
-│   └── orchestrator.py     # Worker pool manager
+│   ├── cli.py                  # CLI (doit test spawns container)
+│   └── orchestrator.py         # Worker pool manager
+├── orchestrator/
+│   ├── Dockerfile              # Orchestrator image (Python + Poetry + Docker)
+│   └── test_entrypoint.sh      # Container entrypoint
 ├── worker/
-│   ├── Dockerfile          # Worker image (Alpine-based)
-│   └── run_test.sh        # Test imitation script
+│   ├── Dockerfile              # Worker image (Alpine-based)
+│   └── run_test.sh            # Test imitation script
 └── tests/
-    └── test_orchestrator.py  # Unit tests with parallel verification
+    └── test_orchestrator.py   # Unit tests
 ```
 
 ## How It Works
 
-1. CLI parses `--parallel --workers N` flags
-2. WorkerPool spawns up to N containers simultaneously
-3. Each container runs `run_test.sh` which sleeps for configured duration
-4. When a worker finishes, the pool starts the next scenario
-5. Results are collected and reported
-
-The worker container reads `SCENARIO_ID` and `SCENARIO_DURATION` from environment variables set by the orchestrator.
+1. `poetry run doit test` is called
+2. CLI spawns orchestrator container with Docker socket mounted
+3. Orchestrator container sets `IN_ORCHESTRATOR=true` env var
+4. Inside container, CLI detects this env var and runs tests directly
+5. WorkerPool spawns worker containers via Docker SDK (talking to host daemon)
+6. Each worker container runs `run_test.sh` which sleeps for configured duration
