@@ -31,8 +31,9 @@ class WorkerPool:
     def __init__(
         self,
         num_workers: int = 4,
-        image: str = "doit-worker:latest",
-        docker_socket: str = "unix:///var/run/docker.sock"
+        image: str = "doit-orchestrator:latest",
+        docker_socket: str = "unix:///var/run/docker.sock",
+        work_dir: Optional[str] = None
     ):
         self.num_workers = num_workers
         self.image = image
@@ -40,23 +41,36 @@ class WorkerPool:
         self.active_containers: list[Container] = []
         self.results: list[TestResult] = []
         self._lock = threading.Lock()
+        self.work_dir = work_dir
 
     def _run_scenario(self, scenario: TestScenario) -> TestResult:
         """Run a single test scenario in a container."""
         start_time = time.time()
 
         try:
-            # Run container with scenario ID and duration, and set role to worker
-            container = self.docker_client.containers.run(
-                self.image,
-                detach=True,
-                remove=False,
-                environment={
+            # Build container run arguments
+            run_kwargs = {
+                "detach": True,
+                "remove": False,
+                "environment": {
                     "ROLE": "worker",
                     "SCENARIO_ID": str(scenario.id),
                     "SCENARIO_DURATION": str(scenario.duration)
                 },
-                name=f"doit-worker-{scenario.id}"
+                "name": f"doit-worker-{scenario.id}"
+            }
+
+            # Mount worker directory from host if specified
+            if self.work_dir:
+                run_kwargs["volumes"] = {
+                    self.work_dir: {"bind": "/work", "mode": "ro"}
+                }
+                run_kwargs["working_dir"] = "/work"
+
+            # Run container with scenario ID and duration, and set role to worker
+            container = self.docker_client.containers.run(
+                self.image,
+                **run_kwargs
             )
 
             with self._lock:

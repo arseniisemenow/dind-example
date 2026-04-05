@@ -13,7 +13,7 @@ def cli():
     pass
 
 
-def _run_tests(parallel: bool, workers: int, scenarios: int, duration: int, image: str):
+def _run_tests(parallel: bool, workers: int, scenarios: int, duration: int, image: str, work_dir: str = None):
     """Shared test execution logic."""
     click.echo(f"Starting test execution:")
     click.echo(f"  Parallel: {parallel}")
@@ -21,6 +21,8 @@ def _run_tests(parallel: bool, workers: int, scenarios: int, duration: int, imag
     click.echo(f"  Scenarios: {scenarios}")
     click.echo(f"  Duration per scenario: {duration}s")
     click.echo(f"  Worker image: {image}")
+    if work_dir:
+        click.echo(f"  Work dir: {work_dir}")
     click.echo()
 
     if not parallel:
@@ -32,7 +34,7 @@ def _run_tests(parallel: bool, workers: int, scenarios: int, duration: int, imag
     start_time = time.time()
 
     try:
-        with WorkerPool(num_workers=workers, image=image) as pool:
+        with WorkerPool(num_workers=workers, image=image, work_dir=work_dir) as pool:
             results = pool.run_parallel(scenario_list)
 
         total_time = int(time.time() - start_time)
@@ -65,18 +67,24 @@ def test(parallel: bool, workers: int, scenarios: int, duration: int, image: str
     Spawns an orchestrator container with Docker socket mounted,
     which runs the test scenarios and spawns worker containers.
     Both orchestrator and workers use the same Docker image.
+    
+    Current directory is mounted as /work in worker containers.
     """
     import os
     import subprocess
 
+    # Get current working directory (to share with workers)
+    work_dir = os.getcwd()
+
     # Check if we're already inside the container
     if os.environ.get('IN_ORCHESTRATOR'):
         # Run tests directly (don't spawn another container)
-        _run_tests(parallel, workers, scenarios, duration, image)
+        _run_tests(parallel, workers, scenarios, duration, image, work_dir)
         return
 
     click.echo("Running in DIND mode (inside container)")
     click.echo(f"  Image: {image}")
+    click.echo(f"  Work dir: {work_dir} (mounted as /work)")
     click.echo(f"  Mounting Docker socket from host")
     click.echo()
 
@@ -91,16 +99,18 @@ def test(parallel: bool, workers: int, scenarios: int, duration: int, image: str
         click.echo(f"Build failed: {build_result.stderr}", err=True)
         sys.exit(1)
 
-    # Run orchestrator container with Docker socket mounted
+    # Run orchestrator container with Docker socket mounted and current dir as work dir
     docker_args = [
         "docker", "run", "--rm",
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
+        "-v", f"{work_dir}:/work:ro",
         "-e", f"ROLE=orchestrator",
         "-e", f"IN_ORCHESTRATOR=true",
         "-e", f"WORKERS={workers}",
         "-e", f"SCENARIOS={scenarios}",
         "-e", f"DURATION={duration}",
         "-e", f"WORKER_IMAGE={image}",
+        "-e", f"WORK_DIR=/work",
     ]
 
     # Pass through parallel flag
