@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "doit"
+version = "0.1.0"
+description = "DIND parallel test orchestrator"
+authors = ["Demo Author"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+click = "^8.1.7"
+docker = "^7.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+pytest-asyncio = "^0.23.0"
+freezegun = "^1.4.0"
+
+[tool.poetry.scripts]
+doit = "doit.cli:cli"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
