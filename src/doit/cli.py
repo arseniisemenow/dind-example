@@ -58,30 +58,32 @@ def _run_tests(parallel: bool, workers: int, scenarios: int, duration: int, imag
 @click.option('--workers', type=int, default=4, help='Number of parallel workers')
 @click.option('--scenarios', type=int, default=5, help='Number of test scenarios')
 @click.option('--duration', type=int, default=60, help='Duration of each scenario in seconds')
-@click.option('--image', 'image', default='doit-worker:latest', help='Worker Docker image')
+@click.option('--image', 'image', default='doit-orchestrator:latest', help='Docker image for orchestrator and workers')
 def test(parallel: bool, workers: int, scenarios: int, duration: int, image: str):
     """Run test scenarios in DIND mode (inside container).
     
     Spawns an orchestrator container with Docker socket mounted,
     which runs the test scenarios and spawns worker containers.
+    Both orchestrator and workers use the same Docker image.
     """
     import os
     import subprocess
 
-    # Check if we're already inside the orchestrator container
+    # Check if we're already inside the container
     if os.environ.get('IN_ORCHESTRATOR'):
         # Run tests directly (don't spawn another container)
         _run_tests(parallel, workers, scenarios, duration, image)
         return
 
     click.echo("Running in DIND mode (inside container)")
+    click.echo(f"  Image: {image}")
     click.echo(f"  Mounting Docker socket from host")
     click.echo()
 
     # Build orchestrator image if needed
     click.echo("Ensuring orchestrator image is built...")
     build_result = subprocess.run(
-        ["docker", "build", "-t", "doit-orchestrator:latest", "-f", "orchestrator/Dockerfile", "."],
+        ["docker", "build", "-t", image, "-f", "orchestrator/Dockerfile", "."],
         capture_output=True,
         text=True
     )
@@ -93,6 +95,7 @@ def test(parallel: bool, workers: int, scenarios: int, duration: int, image: str
     docker_args = [
         "docker", "run", "--rm",
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
+        "-e", f"ROLE=orchestrator",
         "-e", f"IN_ORCHESTRATOR=true",
         "-e", f"WORKERS={workers}",
         "-e", f"SCENARIOS={scenarios}",
@@ -105,7 +108,7 @@ def test(parallel: bool, workers: int, scenarios: int, duration: int, image: str
         docker_args.append("-e")
         docker_args.append("PARALLEL=true")
 
-    docker_args.append("doit-orchestrator:latest")
+    docker_args.append(image)
 
     click.echo(f"Starting orchestrator container...")
     result = subprocess.run(docker_args, capture_output=False)
@@ -114,12 +117,12 @@ def test(parallel: bool, workers: int, scenarios: int, duration: int, image: str
 
 @cli.command()
 def build():
-    """Build the worker Docker image."""
+    """Build the unified Docker image (for orchestrator and workers)."""
     import subprocess
 
-    click.echo("Building worker image...")
+    click.echo("Building unified Docker image...")
     result = subprocess.run(
-        ["docker", "build", "-t", "doit-worker:latest", "-f", "worker/Dockerfile", "worker/"],
+        ["docker", "build", "-t", "doit-orchestrator:latest", "-f", "orchestrator/Dockerfile", "."],
         capture_output=True,
         text=True
     )
@@ -133,32 +136,21 @@ def build():
 
 @cli.command()
 def build_all():
-    """Build both worker and orchestrator images."""
+    """Build the unified Docker image (alias for build)."""
     import subprocess
 
-    click.echo("Building worker image...")
-    result = subprocess.run(
-        ["docker", "build", "-t", "doit-worker:latest", "-f", "worker/Dockerfile", "worker/"],
-        capture_output=True,
-        text=True
-    )
-    if result.returncode != 0:
-        click.echo(f"Worker build failed: {result.stderr}", err=True)
-        sys.exit(1)
-    click.echo("Worker image built!")
-
-    click.echo("Building orchestrator image...")
+    click.echo("Building unified Docker image...")
     result = subprocess.run(
         ["docker", "build", "-t", "doit-orchestrator:latest", "-f", "orchestrator/Dockerfile", "."],
         capture_output=True,
         text=True
     )
-    if result.returncode != 0:
-        click.echo(f"Orchestrator build failed: {result.stderr}", err=True)
-        sys.exit(1)
-    click.echo("Orchestrator image built!")
 
-    click.echo("All images built successfully!")
+    if result.returncode == 0:
+        click.echo("Build successful!")
+    else:
+        click.echo(f"Build failed: {result.stderr}", err=True)
+        sys.exit(1)
 
 
 if __name__ == '__main__':

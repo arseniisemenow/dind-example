@@ -8,15 +8,21 @@ Docker-in-Docker demo with parallel test scenario execution.
 Host Machine (Docker Daemon)
     │
     └── `poetry run doit test` spawns:
-           └── Orchestrator Container
+           └── Unified Container (same image for orchestrator + workers)
                   └── Mounts /var/run/docker.sock
-                  └── Spawns Worker Containers (parallel)
+                  └── Spawns Worker Containers (same image)
                          ├── Worker 1 → scenario 1
                          ├── Worker 2 → scenario 2
                          ├── Worker 3 → scenario 3
                          ├── Worker 4 → scenario 4
                          └── (after worker finishes) → scenario 5
 ```
+
+## Key Feature: Unified Image
+
+Both the **orchestrator** and **worker** containers use the **same Docker image**. The role is determined by the `ROLE` environment variable:
+- `ROLE=orchestrator` → runs test orchestration logic
+- `ROLE=worker` → runs test scenario
 
 ## Requirements
 
@@ -31,35 +37,22 @@ Host Machine (Docker Daemon)
 poetry install
 ```
 
-2. Build Docker images:
+2. Build the unified Docker image:
 ```bash
-poetry run doit build        # Worker image
-# Orchestrator image is built automatically on first `doit test` run
-```
-
-Or build both at once:
-```bash
-docker build -t doit-worker:latest -f worker/Dockerfile worker/
-docker build -t doit-orchestrator:latest -f orchestrator/Dockerfile .
+poetry run doit build
 ```
 
 ## Usage
 
-**DIND mode (default):**
 ```bash
 poetry run doit test --workers 4
 ```
-
-This command:
-1. Spawns an orchestrator container with Docker socket mounted
-2. Container runs the test orchestration
-3. Worker containers are spawned in parallel via the mounted socket
 
 Options:
 - `--workers N` - Number of parallel workers (default: 4)
 - `--scenarios N` - Number of test scenarios (default: 5)
 - `--duration N` - Duration of each scenario in seconds (default: 60)
-- `--image NAME` - Worker Docker image (default: doit-worker:latest)
+- `--image NAME` - Unified Docker image (default: doit-orchestrator:latest)
 
 ### Examples
 
@@ -92,20 +85,34 @@ The key test `test_4_workers_4_scenarios_should_take_approx_60s` verifies parall
 │   ├── cli.py                  # CLI (doit test spawns container)
 │   └── orchestrator.py         # Worker pool manager
 ├── orchestrator/
-│   ├── Dockerfile              # Orchestrator image (Python + Poetry + Docker)
-│   └── test_entrypoint.sh      # Container entrypoint
-├── worker/
-│   ├── Dockerfile              # Worker image (Alpine-based)
-│   └── run_test.sh            # Test imitation script
+│   ├── Dockerfile              # Unified image (Python + Poetry + Docker)
+│   └── unified_entrypoint.sh  # Handles both orchestrator & worker roles
 └── tests/
     └── test_orchestrator.py   # Unit tests
 ```
 
 ## How It Works
 
-1. `poetry run doit test` is called
-2. CLI spawns orchestrator container with Docker socket mounted
-3. Orchestrator container sets `IN_ORCHESTRATOR=true` env var
-4. Inside container, CLI detects this env var and runs tests directly
-5. WorkerPool spawns worker containers via Docker SDK (talking to host daemon)
-6. Each worker container runs `run_test.sh` which sleeps for configured duration
+1. `poetry run doit test` is called on host
+2. CLI builds unified Docker image (if needed)
+3. CLI spawns orchestrator container with:
+   - Docker socket mounted (`-v /var/run/docker.sock:/var/run/docker.sock`)
+   - `ROLE=orchestrator` environment variable
+   - Test parameters (workers, scenarios, duration)
+4. Inside orchestrator container:
+   - Detects `IN_ORCHESTRATOR=true` environment variable
+   - Runs test orchestration directly (not another container)
+5. WorkerPool spawns worker containers via Docker SDK:
+   - Uses same image as orchestrator
+   - Sets `ROLE=worker` environment variable
+   - Each worker runs its test scenario and exits
+
+## Image Details
+
+The unified image includes:
+- Python 3.12 (slim)
+- Poetry
+- Docker CLI
+- Project source code and dependencies
+
+Worker containers just run the test scenario and exit. Orchestrator container handles the coordination and spawns workers as slots become available.

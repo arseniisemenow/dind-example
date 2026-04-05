@@ -46,12 +46,13 @@ class WorkerPool:
         start_time = time.time()
 
         try:
-            # Run container with scenario ID and duration
+            # Run container with scenario ID and duration, and set role to worker
             container = self.docker_client.containers.run(
                 self.image,
                 detach=True,
                 remove=False,
                 environment={
+                    "ROLE": "worker",
                     "SCENARIO_ID": str(scenario.id),
                     "SCENARIO_DURATION": str(scenario.duration)
                 },

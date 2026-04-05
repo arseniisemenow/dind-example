@@ -14,13 +14,15 @@ WORKDIR /app
 # Copy project files (build context should be the project root)
 COPY pyproject.toml ./
 COPY src ./src
-COPY worker ./worker
-COPY orchestrator/test_entrypoint.sh /usr/local/bin/test_entrypoint.sh
+COPY orchestrator/unified_entrypoint.sh /usr/local/bin/doit.sh
 
 # Install dependencies
 RUN poetry install --no-interaction --no-ansi
 
-RUN chmod +x /usr/local/bin/test_entrypoint.sh
+RUN chmod +x /usr/local/bin/doit.sh
 
-# Default command runs test
-ENTRYPOINT ["/usr/local/bin/test_entrypoint.sh"]
+# Default role is orchestrator
+ENV ROLE=orchestrator
+
+# Default command - will run based on ROLE env var
+CMD ["/usr/local/bin/doit.sh"]
